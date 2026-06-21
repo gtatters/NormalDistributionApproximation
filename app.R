@@ -176,8 +176,8 @@ ui <- fluidPage(
     
     mainPanel(
       plotOutput("plot", height = "500px"),
-      verbatimTextOutput("tests"),
-      verbatimTextOutput("explain")
+      htmlOutput("explain"),
+      verbatimTextOutput("tests")
     )
   )
 )
@@ -409,13 +409,11 @@ server <- function(input, output) {
   # -----------------------------
   # Teaching explanation text
   # -----------------------------
-  output$explain <- renderText({
+  output$explain <- renderUI({
     result <- sw_result()
     
-    wrap80 <- function(...) paste(strwrap(paste0(...), width = 80), collapse = "\n")
-    
     if (is.null(result)) {
-      return("Sample too large for Shapiro-Wilk; use the Q-Q plot to assess normality.")
+      return(HTML("<p>Sample too large for Shapiro-Wilk; use the Q-Q plot to assess normality.</p>"))
     }
     
     pvalueSW   <- result$p.value
@@ -423,49 +421,34 @@ server <- function(input, output) {
     dist_label <- input$dist
     
     if (!input$many_exp && !input$paired_diff) {
-      base <- wrap80(
+      base <- paste0(
         "What you're seeing: A single sample of ", input$n, " values drawn ",
         "directly from the ", dist_label, " distribution. ",
         "The Shapiro-Wilk test is asking: do these raw values look like they ",
         "came from a normal distribution?"
       )
       note <- if (sig) {
-        paste0("\n\n", wrap80(
-          "Result: The test suggests non-normality (p < 0.05). This reflects ",
-          "the shape of the underlying distribution itself."
-        ))
+        "Result: The test suggests non-normality (p < 0.05). This reflects the shape of the underlying distribution itself."
       } else {
-        paste0("\n\n", wrap80(
-          "Result: No strong evidence of non-normality (p >= 0.05). ",
-          "The sample is consistent with normality."
-        ))
+        "Result: No strong evidence of non-normality (p \u2265 0.05). The sample is consistent with normality."
       }
       
     } else if (!input$many_exp && input$paired_diff) {
-      base <- wrap80(
-        "What you're seeing: Paired differences (X - Y) from a single ",
+      base <- paste0(
+        "What you're seeing: Paired differences (X \u2212 Y) from a single ",
         "experiment (n = ", input$n, "), where both X and Y are drawn from ",
         "the ", dist_label, " distribution. ",
-        "The Shapiro-Wilk test is asking: do these differences look normally ",
-        "distributed?"
+        "The Shapiro-Wilk test is asking: do these differences look normally distributed?"
       )
       note <- if (sig) {
-        paste0("\n\n", wrap80(
-          "Result: The differences appear non-normal (p < 0.05). Even after ",
-          "differencing, the shape of the original distribution leaves a ",
-          "detectable skew or irregularity."
-        ))
+        "Result: The differences appear non-normal (p < 0.05). Even after differencing, the shape of the original distribution leaves a detectable skew or irregularity."
       } else {
-        paste0("\n\n", wrap80(
-          "Result: The differences look approximately normal (p >= 0.05). ",
-          "Subtracting two samples from the same distribution often produces ",
-          "a more symmetric, bell-shaped result."
-        ))
+        "Result: The differences look approximately normal (p \u2265 0.05). Subtracting two samples from the same distribution often produces a more symmetric, bell-shaped result."
       }
       
     } else if (input$many_exp && !input$paired_diff) {
-      base <- wrap80(
-        "What you're seeing: The sampling distribution of the mean - ",
+      base <- paste0(
+        "What you're seeing: The sampling distribution of the mean \u2014 ",
         input$n_exp, " simulated experiments, each drawing n = ", input$n,
         " values from the ", dist_label, " distribution, with the mean ",
         "computed each time. The Shapiro-Wilk test is asking: does this ",
@@ -473,44 +456,27 @@ server <- function(input, output) {
         "demonstration of the Central Limit Theorem (CLT)."
       )
       note <- if (sig) {
-        paste0("\n\n", wrap80(
-          "Result: The distribution of means is still detectably non-normal ",
-          "(p < 0.05). With a small n or a heavily skewed distribution, the ",
-          "CLT may need a larger sample size to fully kick in."
-        ))
+        "Result: The distribution of means is still detectably non-normal (p < 0.05). With a small n or a heavily skewed distribution, the CLT may need a larger sample size to fully kick in."
       } else {
-        paste0("\n\n", wrap80(
-          "Result: The distribution of means looks normal (p >= 0.05). ",
-          "This is the CLT in action: even if the underlying distribution is ",
-          "not normal, means of repeated samples tend toward normality."
-        ))
+        "Result: The distribution of means looks normal (p \u2265 0.05). This is the CLT in action: even if the underlying distribution is not normal, means of repeated samples tend toward normality."
       }
       
     } else {
-      base <- wrap80(
+      base <- paste0(
         "What you're seeing: The sampling distribution of mean paired ",
-        "differences - ", input$n_exp, " simulated experiments, each ",
-        "computing the mean of (X - Y) with n = ", input$n, " pairs drawn ",
+        "differences \u2014 ", input$n_exp, " simulated experiments, each ",
+        "computing the mean of (X \u2212 Y) with n = ", input$n, " pairs drawn ",
         "from the ", dist_label, " distribution. The Shapiro-Wilk test is ",
-        "asking: does this collection of mean differences look normally ",
-        "distributed?"
+        "asking: does this collection of mean differences look normally distributed?"
       )
       note <- if (sig) {
-        paste0("\n\n", wrap80(
-          "Result: The mean differences are still detectably non-normal ",
-          "(p < 0.05). Try increasing the sample size to see the CLT pull ",
-          "the distribution toward normality."
-        ))
+        "Result: The mean differences are still detectably non-normal (p < 0.05). Try increasing the sample size to see the CLT pull the distribution toward normality."
       } else {
-        paste0("\n\n", wrap80(
-          "Result: The mean differences look normal (p >= 0.05). Averaging ",
-          "over many paired observations smooths out the original ",
-          "distribution's shape, consistent with the CLT."
-        ))
+        "Result: The mean differences look normal (p \u2265 0.05). Averaging over many paired observations smooths out the original distribution's shape, consistent with the CLT."
       }
     }
     
-    paste0(base, note)
+    HTML(paste0("<p>", base, "</p><p>", note, "</p>"))
   })
 }
 
