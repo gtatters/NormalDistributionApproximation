@@ -39,7 +39,7 @@ qqPlot_base <- function(x,
   sig  <- sd(x)
   
   # Theoretical normal quantiles for plotting positions
-  probs <- ppoints(n)          # (1:n - 0.375) / (n + 0.25) — Blom formula
+  probs <- ppoints(n)          # (1:n - 0.375) / (n + 0.25), Blom formula
   qth   <- qnorm(probs, mu, sig)
   
   # Standardise to N(0,1) for the envelope calculation
@@ -88,6 +88,27 @@ qqPlot_base <- function(x,
   lines(qth, hi_orig, lty = 2, col = col.lines, lwd = 1.5)
   
   invisible(list(x = qth, y = sx, lower = lo_orig, upper = hi_orig))
+}
+
+
+# -----------------------------
+# Safari-safe plotting
+# Draws a base-R plot as a PNG image. Stand-in for renderPlot(), which
+# currently fails in Safari under Shinylive. Use with imageOutput().
+# -----------------------------
+render_base <- function(id, session, draw) {
+  renderImage({
+    cd <- session$clientData
+    w  <- cd[[paste0("output_", id, "_width")]]
+    h  <- cd[[paste0("output_", id, "_height")]]
+    req(w > 0, h > 0)
+    pr <- cd$pixelratio
+    if (is.null(pr)) pr <- 1
+    f <- tempfile(fileext = ".png")
+    png(f, width = w * pr, height = h * pr, res = 72 * pr)
+    tryCatch(draw(), finally = dev.off())
+    list(src = f, contentType = "image/png", width = w, height = h)
+  }, deleteFile = TRUE)
 }
 
 
@@ -175,7 +196,7 @@ ui <- fluidPage(
     ),
     
     mainPanel(
-      plotOutput("plot", height = "500px"),
+      imageOutput("plot", height = "500px"),
       htmlOutput("explain"),
       verbatimTextOutput("tests")
     )
@@ -186,9 +207,9 @@ ui <- fluidPage(
 # -----------------------------
 # SERVER
 # -----------------------------
-server <- function(input, output) {
- 
-   # -----------------------------
+server <- function(input, output, session) {
+  
+  # -----------------------------
   # Function to generate a sample
   # -----------------------------
   generate_sample <- function(n, dist) {
@@ -204,6 +225,40 @@ server <- function(input, output) {
            "Poisson (lambda=3)"      = rpois(n, 3),
            "Binomial (n=20, p=0.3)"  = rbinom(n, 20, 0.3)
     )
+  }
+  
+  # -----------------------------
+  # True mean and variance of each distribution
+  # (used for the theoretical normal overlay and the true-mean line)
+  # -----------------------------
+  dist_moments <- function(dist) {
+    switch(dist,
+           "Normal"                  = c(mean = 0,          var = 1),
+           "Uniform"                 = c(mean = 0.5,        var = 1 / 12),
+           "t (df=3)"                = c(mean = 0,          var = 3),       # df / (df - 2)
+           "Exponential (skewed)"    = c(mean = 1,          var = 1),
+           "Log-normal"              = c(mean = exp(0.5),   var = (exp(1) - 1) * exp(1)),
+           "Chi-square (df=3)"       = c(mean = 3,          var = 6),       # df, 2 * df
+           "Gamma (shape=2)"         = c(mean = 2,          var = 2),       # shape / rate, shape / rate^2
+           "Beta (2,5)"              = c(mean = 2 / 7,      var = 10 / 392),# ab / ((a+b)^2 (a+b+1))
+           "Poisson (lambda=3)"      = c(mean = 3,          var = 3),
+           "Binomial (n=20, p=0.3)"  = c(mean = 6,          var = 4.2)      # np, np(1-p)
+    )
+  }
+  
+  # -----------------------------
+  # Theoretical mean and SD of whatever is being plotted
+  #   single experiment, raw values  : mean,  sqrt(var)
+  #   single experiment, X - Y       : 0,     sqrt(2 var)
+  #   many experiments, means        : mean,  sqrt(var / n)
+  #   many experiments, mean(X - Y)  : 0,     sqrt(2 var / n)
+  # -----------------------------
+  theory_params <- function(dist, n, paired, many) {
+    m  <- dist_moments(dist)
+    mu <- if (paired) 0 else unname(m["mean"])
+    v  <- if (paired) 2 * unname(m["var"]) else unname(m["var"])
+    if (many) v <- v / n
+    c(mu = mu, sigma = sqrt(v))
   }
   
   # -----------------------------
@@ -234,62 +289,17 @@ server <- function(input, output) {
       })
     }
     
-    # Standardize if requested
+    # Standardize if requested. Keep the centre and scale used, so the
+    # theoretical curve and true-mean line can be shifted the same way.
+    centre <- 0
+    scale  <- 1
     if (input$standardize) {
-      values <- (values - mean(values)) / sd(values)
+      centre <- mean(values)
+      scale  <- sd(values)
+      values <- (values - centre) / scale
     }
     
-    values
-  })
-  
-  # -----------------------------
-  # Reactive: Confidence intervals (many experiments only)
-  # -----------------------------
-  get_results <- reactive({
-    if (!input$many_exp) return(NULL)
-    
-    n     <- input$n
-    n_exp <- input$n_exp
-    
-    results <- replicate(n_exp, {
-      
-      X <- generate_sample(n, input$dist)
-      Y <- generate_sample(n, input$dist)
-      
-      if (input$paired_diff) {
-        vals      <- X - Y
-        true_mean <- 0
-      } else {
-        vals      <- X
-        true_mean <- switch(input$dist,
-                            "Exponential (skewed)"   = 1,
-                            "Uniform"                = 0.5,
-                            "Log-normal"             = exp(0 + 0.5),
-                            "Chi-square (df=3)"      = 3,
-                            "Gamma (shape=2)"        = 2,
-                            "Normal"                 = 0,
-                            "t (df=3)"               = 0,
-                            "Beta (2,5)"             = 2 / 7,
-                            "Poisson (lambda=3)"     = 3,
-                            "Binomial (n=20, p=0.3)" = 6,
-                            NA)
-      }
-      
-      m     <- mean(vals)
-      s     <- sd(vals)
-      se    <- s / sqrt(n)
-      lower <- m - 1.96 * se
-      upper <- m + 1.96 * se
-      
-      c(mean    = m,
-        lower   = lower,
-        upper   = upper,
-        true    = true_mean,
-        covered = as.numeric(true_mean >= lower & true_mean <= upper),
-        width   = upper - lower)
-    })
-    
-    as.data.frame(t(results))
+    list(values = values, centre = centre, scale = scale)
   })
   
   # -----------------------------
@@ -297,59 +307,29 @@ server <- function(input, output) {
   # so both always refer to the exact same sample)
   # -----------------------------
   sw_result <- reactive({
-    values <- get_values()
+    values <- get_values()$values
     if (length(values) <= 5000) shapiro.test(values) else NULL
   })
   
   # -----------------------------
   # Plot: Histogram + Q-Q plot
   # -----------------------------
-  output$plot <- renderPlot({
+  output$plot <- render_base("plot", session, function() {
     
-    values <- get_values()
-    n      <- input$n
+    gv     <- get_values()
+    values <- gv$values
     
-    # Determine normal overlay parameters
+    # Theoretical mean and SD of the plotted quantity, moved onto the same
+    # scale as the data (if "Standardize" is on, apply the same shift and
+    # rescaling that was applied to the values)
+    th       <- theory_params(input$dist, input$n, input$paired_diff, input$many_exp)
+    th_mu    <- (th["mu"] - gv$centre) / gv$scale
+    th_sigma <- th["sigma"] / gv$scale
+    
+    # Normal overlay: theoretical, or fitted to the sample
     if (input$use_theoretical) {
-      
-      if (!input$many_exp) {
-        if (input$paired_diff) {
-          mu    <- 0
-          sigma <- sqrt(2)
-        } else {
-          mu    <- switch(input$dist,
-                          "Exponential (skewed)"   = 1,
-                          "Log-normal"             = exp(0 + 0.5),
-                          "Chi-square (df=3)"      = 3,
-                          "Gamma (shape=2)"        = 2,
-                          "Uniform"                = 0.5,
-                          "Normal"                 = 0,
-                          "t (df=3)"               = 0,
-                          "Beta (2,5)"             = 2 / 7,
-                          "Poisson (lambda=3)"     = 3,
-                          "Binomial (n=20, p=0.3)" = 6)
-          sigma <- sd(values)
-        }
-      } else {
-        if (input$paired_diff) {
-          mu    <- 0
-          sigma <- sqrt(2 / n)
-        } else {
-          mu    <- switch(input$dist,
-                          "Exponential (skewed)"   = 1,
-                          "Log-normal"             = exp(0 + 0.5),
-                          "Chi-square (df=3)"      = 3,
-                          "Gamma (shape=2)"        = 2,
-                          "Uniform"                = 0.5,
-                          "Normal"                 = 0,
-                          "t (df=3)"               = 0,
-                          "Beta (2,5)"             = 2 / 7,
-                          "Poisson (lambda=3)"     = 3,
-                          "Binomial (n=20, p=0.3)" = 6)
-          sigma <- sd(values)
-        }
-      }
-      
+      mu    <- th_mu
+      sigma <- th_sigma
     } else {
       mu    <- mean(values)
       sigma <- sd(values)
@@ -371,8 +351,7 @@ server <- function(input, output) {
     
     # True mean line in many-experiments mode
     if (input$many_exp) {
-      res <- get_results()
-      abline(v = unique(res$true), col = "blue", lwd = 2, lty = 2)
+      abline(v = th_mu, col = "blue", lwd = 2, lty = 2)
     }
     
     # --- Q-Q plot with 95% envelope (base R, no car) ---
@@ -448,7 +427,7 @@ server <- function(input, output) {
       
     } else if (input$many_exp && !input$paired_diff) {
       base <- paste0(
-        "What you're seeing: The sampling distribution of the mean \u2014 ",
+        "What you're seeing: The sampling distribution of the mean, from ",
         input$n_exp, " simulated experiments, each drawing n = ", input$n,
         " values from the ", dist_label, " distribution, with the mean ",
         "computed each time. The Shapiro-Wilk test is asking: does this ",
@@ -464,7 +443,7 @@ server <- function(input, output) {
     } else {
       base <- paste0(
         "What you're seeing: The sampling distribution of mean paired ",
-        "differences \u2014 ", input$n_exp, " simulated experiments, each ",
+        "differences, from ", input$n_exp, " simulated experiments, each ",
         "computing the mean of (X \u2212 Y) with n = ", input$n, " pairs drawn ",
         "from the ", dist_label, " distribution. The Shapiro-Wilk test is ",
         "asking: does this collection of mean differences look normally distributed?"
